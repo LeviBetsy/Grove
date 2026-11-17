@@ -1,0 +1,45 @@
+{
+  "templates": [
+    {
+      "id": "get-out-of-bed",
+      "name": "Get out of bed",
+      "minutes": 60,
+      "worth": 20,
+      "tasks": [
+        { "name": "Put phone in bag", "percent": 10 },
+        { "name": "Fold sheet", "percent": 10 },
+        { "name": "Brush teeth", "percent": 10 },
+        { "name": "Shower", "percent": 20 },
+        { "name": "Breakfast or lunch", "percent": 20 },
+        { "name": "Pack bag", "percent": 10 },
+        { "name": "Fold laptop", "percent": 10 },
+        { "name": "Do hair", "percent": 10 }
+      ]
+    },
+    {
+      "id": "bedtime",
+      "name": "Bedtime",
+      "minutes": 30,
+      "worth": 20,
+      "tasks": [
+        { "name": "Put phone away", "percent": 15 },
+        { "name": "Brush teeth", "percent": 10 },
+        { "name": "Wash face", "percent": 10 },
+        { "name": "Lay out tomorrow's clothes", "percent": 10 },
+        { "name": "Lights out", "percent": 15 }
+      ]
+    },
+    {
+      "id": "lunch",
+      "name": "Lunch",
+      "minutes": 60,
+      "worth": 20,
+      "tasks": [
+        { "name": "Make and Eat Food", "percent": 50 },
+        { "name": "Brush Teeth", "percent": 20 },
+        { "name": "Pack", "percent": 10 },
+        { "name": "Fold Laptop", "percent": 20 }
+      ]
+    }
+  ]
+}

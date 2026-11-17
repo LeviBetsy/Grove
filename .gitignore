@@ -1,0 +1,30 @@
+# Personal progress data (my real history). Remove this line to version it.
+data/projects.json
+
+# Backups and atomic-write temp files made by server.js
+data/*.bak
+data/*.tmp
+*.bak
+*.tmp
+
+# Dependencies (none today, but just in case)
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env files
+.env
+.env.*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo

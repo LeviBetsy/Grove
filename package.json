@@ -1,0 +1,9 @@
+{
+  "name": "grove-progress",
+  "version": "1.0.0",
+  "description": "A forest-themed local progress tracker. Data is saved to data/projects.json.",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

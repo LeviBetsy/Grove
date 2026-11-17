@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grove</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M16 2 L27 18 H21 L28 28 H4 L11 18 H5 Z' fill='%233f9b55'/><rect x='14' y='26' width='4' height='5' fill='%238b5a3c'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Forest backdrop -->
+  <div class="forest" aria-hidden="true">
+    <div class="sky"></div>
+    <div class="stars" id="stars"></div>
+    <div class="sun"></div>
+    <div class="moon"></div>
+    <svg class="trees layer-far" id="treesFar" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMax slice"></svg>
+    <div class="mist mist-a"></div>
+    <svg class="trees layer-mid" id="treesMid" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMax slice"></svg>
+    <div class="mist mist-b"></div>
+    <svg class="trees layer-near" id="treesNear" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMax slice"></svg>
+    <div class="fireflies" id="fireflies"></div>
+  </div>
+
+  <header class="topbar">
+    <!-- The Grove: the master bar every journey and routine fills (opens the Grove view) -->
+    <button type="button" class="brand" id="groveBtn" aria-pressed="false" title="Your Grove">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><path d="M16 2 L27 18 H21 L28 28 H4 L11 18 H5 Z" fill="#5fbf6a"/><rect x="14" y="26" width="4" height="5" fill="#b07a4f"/></svg>
+      <span class="brand-text">
+        <span class="brand-name">Grove</span>
+        <span class="brand-bar"><i id="groveBar"></i></span>
+      </span>
+      <span class="brand-tokens" id="groveTokenCount"></span>
+    </button>
+    <nav class="tabs" id="tabs" aria-label="Trackers"></nav>
+    <div class="menus">
+      <button class="btn btn-ghost small menu-btn" id="popOutBtn" aria-pressed="false" title="Float a small potion over your other windows">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="12" y="12" width="7" height="5" rx="1" fill="currentColor"/></svg>
+        Pop out
+      </button>
+      <div class="menu-wrap">
+        <button class="btn btn-ghost small menu-btn" id="routinesBtn" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Routines
+        </button>
+        <div class="popover" id="routinesMenu" hidden></div>
+      </div>
+      <div class="menu-wrap">
+        <button class="btn btn-ghost small menu-btn" id="archiveBtn" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          Archive <span class="count" id="archiveCount"></span>
+        </button>
+        <div class="popover" id="archiveMenu" hidden></div>
+      </div>
+    </div>
+    <button class="btn btn-gold plant-btn" id="plantBtn" aria-pressed="false" title="Plant a new journey or routine">＋ Plant</button>
+  </header>
+
+  <main>
+    <section class="stage" id="stage">
+      <!-- Empty state -->
+      <!-- Plant view: shown when nothing is planted yet, or from the ＋ Plant button -->
+      <div class="empty" id="empty" hidden>
+        <p class="eyebrow" id="plantEyebrow">Welcome, wanderer</p>
+        <h1>What are you growing?</h1>
+        <p class="muted">Pick what to plant, then give it a name.</p>
+        <div class="kind-cards" role="group" aria-label="What to plant">
+          <button type="button" class="kind-card" data-kind="journey" aria-pressed="true">
+            <span class="kc-icon" aria-hidden="true">🧭</span>
+            <b>Journey</b>
+            <small>A big goal split into stages: a thesis, chapter by chapter</small>
+          </button>
+          <button type="button" class="kind-card" data-kind="routine" aria-pressed="false">
+            <span class="kc-icon" aria-hidden="true">☀</span>
+            <b>Routine</b>
+            <small>A daily checklist you tick off: bedtime, mornings</small>
+          </button>
+        </div>
+        <form class="new-form big" id="emptyForm" autocomplete="off">
+          <input id="emptyName" type="text" maxlength="60" placeholder="thesis" aria-label="New tracker name" />
+          <button type="submit" class="btn btn-gold">Plant journey…</button>
+        </form>
+        <button type="button" class="back-link" id="plantBack" hidden></button>
+      </div>
+
+      <!-- Project view -->
+      <div class="project" id="project" hidden>
+        <div class="title-row">
+          <h1 class="pname" id="pname" spellcheck="false"></h1>
+          <span class="badge" id="archivedBadge" hidden>Archived</span>
+          <button class="icon-btn" id="renameBtn" title="Rename" aria-label="Rename tracker">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 20h4l10-10-4-4L4 16v4zM14 6l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="icon-btn" id="editStagesBtn" title="Edit stages" aria-label="Edit stages" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4.5" cy="6" r="1.6" fill="currentColor"/><circle cx="4.5" cy="12" r="1.6" fill="currentColor"/><circle cx="4.5" cy="18" r="1.6" fill="currentColor"/></svg>
+          </button>
+          <button class="icon-btn" id="archiveToggleBtn" title="Archive" aria-label="Archive tracker">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="icon-btn danger" id="deleteBtn" title="Delete tracker" aria-label="Delete tracker">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="pct" id="pctWrap"><span id="pct">0</span><small>%</small></div>
+
+        <div class="flask-wrap" id="flaskWrap">
+          <div class="glow" id="glow"></div>
+          <canvas class="hero" id="hero"></canvas>
+          <div class="float-layer" id="floatLayer"></div>
+          <svg class="flask" id="flask" role="slider" tabindex="0" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></svg>
+        </div>
+        <div class="leg-panel" id="legPanel" hidden>
+          <div class="legs" id="legs"></div>
+        </div>
+        <div class="task-panel" id="taskPanel" hidden>
+          <div class="race" id="race" hidden aria-live="polite"></div>
+          <div class="tasks" id="tasks"></div>
+          <p class="hint" id="taskHint"></p>
+        </div>
+
+        <!-- Grove view only: tokens earned -->
+        <div class="grove-panel" id="grovePanel" hidden>
+          <p class="grove-sum" id="groveSum"></p>
+          <div class="grove-tokens" id="groveTokens"></div>
+        </div>
+
+        <div class="finish" id="finish"></div>
+
+        <a class="scroll-cue" href="#trail">Trail log ↓</a>
+      </div>
+    </section>
+
+    <section class="trail" id="trail" hidden>
+      <div class="panel">
+        <div class="panel-head"><h2>Trail log</h2></div>
+        <ol class="log" id="log"></ol>
+      </div>
+    </section>
+  </main>
+
+  <!-- Editor sheet: plants or tends a routine (data/templates.json) or a journey's stages.
+       Rows are name + percent; app.js EDITORS sets the wording and the 100% rule per mode. -->
+  <dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
+    <form id="sheetForm" autocomplete="off" novalidate>
+      <div class="sheet-head">
+        <div>
+          <p class="eyebrow" id="sheetEyebrow"></p>
+          <h2 id="sheetTitle"></h2>
+        </div>
+        <button type="button" class="icon-btn" data-close aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <label class="field">
+        <span>Name</span>
+        <input id="sheetName" type="text" maxlength="60" />
+      </label>
+
+      <div class="field">
+        <span id="sheetRowsLabel"></span>
+        <ol class="te-list" id="sheetRows"></ol>
+        <div class="te-actions">
+          <button type="button" class="btn btn-ghost small" id="sheetAddRow"></button>
+          <button type="button" class="btn btn-ghost small" id="sheetSplit" hidden>Split evenly</button>
+        </div>
+      </div>
+
+      <div class="te-total" id="sheetTotal">
+        <div class="te-meter"><i></i></div>
+        <p class="te-sum" id="sheetSum" aria-live="polite"></p>
+      </div>
+
+      <!-- how much of the Grove bar this fills when it's full (300% = three Grove tokens) -->
+      <div class="field" id="sheetWorthField">
+        <span>Grove worth <small id="sheetWorthHint"></small></span>
+        <label class="te-clock te-worth">
+          <input id="sheetWorth" type="number" min="0" max="1000" step="5" placeholder="100" aria-label="Grove worth in percent" />
+          <i>%</i>
+        </label>
+      </div>
+
+      <!-- routines only: an optional time limit to race each day -->
+      <div class="field" id="sheetClockField">
+        <span>Race the clock <small>· minutes to tick every task, empty for no timer</small></span>
+        <label class="te-clock">
+          <input id="sheetMinutes" type="number" min="1" max="720" step="1" placeholder="No timer" aria-label="Time limit in minutes" />
+          <i>minutes</i>
+        </label>
+      </div>
+
+      <p class="sheet-note" id="sheetNote"></p>
+      <p class="sheet-error" id="sheetError" role="alert"></p>
+
+      <div class="sheet-foot">
+        <button type="button" class="btn btn-ghost small btn-danger-text" id="sheetDelete" hidden>Delete routine</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-gold" id="sheetSave"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
