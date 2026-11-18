@@ -127,7 +127,8 @@ button, input { font: inherit; color: inherit; }
   30% { box-shadow: 0 0 0 10px rgba(245, 211, 107, 0.25); transform: scale(1.06); }
   100% { box-shadow: 0 0 0 18px rgba(245, 211, 107, 0); transform: none; }
 }
-.tabs { display: flex; gap: 8px; overflow-x: auto; flex: 1; min-width: 0; padding: 4px 2px; scrollbar-width: thin; }
+.tabs { display: flex; gap: 8px; overflow-x: auto; flex: 1; min-width: 0; padding: 4px 2px; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   display: flex; flex-direction: column; gap: 5px; flex-shrink: 0;
   min-width: 112px; max-width: 200px;
@@ -672,5 +673,103 @@ body.pip:hover .w-ctl, .w-ctl:focus-within { opacity: 1; }
 .token:hover { transform: translateY(-2px) scale(1.08); }
 .token-more { align-self: center; font-weight: 800; color: var(--gold); margin-left: 4px; }
 @keyframes tokenIn { from { opacity: 0; transform: translateY(8px) scale(0.6); } }
+.token.unchosen { opacity: 0.7; }
+
+/* ❗ on the Grove logo: a token is ready to choose */
+.brand { position: relative; }
+.grove-alert {
+  position: absolute; top: -4px; left: 18px;
+  width: 17px; height: 17px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--danger); color: #fff; font-weight: 900; font-size: 12px; line-height: 1;
+  box-shadow: 0 0 0 2px rgba(9, 26, 22, 0.9);
+  animation: alertPulse 1.6s ease-in-out infinite;
+}
+.grove-alert[hidden] { display: none; }
+@keyframes alertPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); box-shadow: 0 0 0 2px rgba(9, 26, 22, 0.9), 0 0 10px 2px rgba(245, 211, 107, 0.6); }
+}
+
+/* choosing the next token */
+.grove-pick { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 4px; }
+.grove-pick:empty { display: none; }
+.pick-head { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.pick-head b { color: var(--gold); }
+.pick-head small, .pick-next small { color: var(--muted); font-size: 12.5px; }
+.pick-cards { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.pick-card {
+  display: flex; align-items: center; gap: 10px; min-width: 170px;
+  padding: 8px 14px 8px 8px; border-radius: 12px; cursor: pointer; text-align: left; color: inherit; font: inherit;
+  background: var(--panel); border: 1px solid var(--panel-border);
+  transition: border-color 0.2s, background 0.2s, transform 0.15s;
+}
+.pick-card.locked { filter: grayscale(1); opacity: 0.45; cursor: not-allowed; }
+.pick-card:hover:not(:disabled):not(.locked) { border-color: var(--gold); background: rgba(245, 211, 107, 0.08); transform: translateY(-2px); }
+.pick-card:disabled { opacity: 0.5; cursor: wait; }
+.pick-card > span { display: flex; flex-direction: column; gap: 1px; }
+.pick-card small { color: var(--muted); font-size: 12.5px; }
+.pick-next { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--muted); font-size: 15px; }
+.pick-lock { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; color: var(--gold); }
+.pick-lock svg { width: 26px; height: 26px; }
+/* the campfire: spend tokens on hours of time (1 token = 1 hour) */
+.campfire {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 240px; margin-top: 8px; padding: 12px 32px 16px; border-radius: 22px;
+  cursor: pointer; color: inherit; font: inherit;
+  background: radial-gradient(ellipse 70% 60% at 50% 45%, rgba(255, 140, 50, 0.22), transparent 75%), var(--panel);
+  border: 1px solid rgba(255, 170, 90, 0.4);
+  box-shadow: 0 0 40px rgba(255, 130, 40, 0.14);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+.campfire b { font-family: var(--font-display); font-weight: 700; font-size: 24px; color: var(--gold); }
+.campfire small { color: var(--muted); font-size: 13px; }
+.campfire:hover:not(:disabled) { transform: translateY(-2px); border-color: rgba(255, 190, 110, 0.75); box-shadow: 0 0 60px rgba(255, 130, 40, 0.3); }
+.campfire:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
+.campfire:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.campfire:disabled { cursor: not-allowed; background: var(--panel); border-color: var(--panel-border); box-shadow: none; }
+.campfire:disabled b { color: var(--muted); }
+.campfire:disabled .flame, .campfire:disabled .ember { display: none; }
+.campfire-art { display: block; filter: drop-shadow(0 0 12px rgba(255, 140, 50, 0.45)); }
+.campfire:disabled .campfire-art { filter: grayscale(0.6) opacity(0.7); }
+.campfire-art svg { display: block; width: 104px; height: 104px; }
+.campfire-art.big svg { width: 84px; height: 84px; }
+.campfire-art .flame { transform-box: fill-box; transform-origin: 50% 100%; animation: flicker 0.9s steps(3) infinite alternate; }
+.campfire-art .flame-in { animation-duration: 0.55s; animation-direction: alternate-reverse; }
+@keyframes flicker {
+  0% { transform: scale(1, 1); }
+  50% { transform: scale(0.94, 1.07) skewX(-4deg); }
+  100% { transform: scale(1.05, 0.94) skewX(3deg); }
+}
+.campfire-art .ember { animation: emberRise 1.8s ease-out infinite; }
+.campfire-art .ember + .ember { animation-delay: 0.9s; }
+@keyframes emberRise { from { transform: translateY(3px); opacity: 1; } to { transform: translateY(-2px); opacity: 0; } }
+
+/* timers burning from spent tokens (they reuse the race strip) */
+.fires { display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); }
+.fires:empty { display: none; }
+.fires .race { width: 100%; margin: 0; border-color: rgba(255, 170, 90, 0.45); box-shadow: 0 0 24px rgba(255, 130, 40, 0.12); }
+.fires .race-time { font-size: 32px; }
+.fires .race:not(.urgent) .race-bar > i { background: linear-gradient(90deg, #ff7a2f, var(--gold)); }
+
+/* the spend dialog */
+.spend-sheet { width: min(620px, calc(100vw - 32px)); }
+.spend-step { display: flex; flex-direction: column; gap: 18px; }
+.spend-step[hidden] { display: none; }
+.spend-types { justify-content: flex-start; }
+.spend-types .pick-card { min-width: 0; flex: 1 1 240px; }
+.spend-types .pick-card:disabled { filter: grayscale(1); opacity: 0.4; cursor: not-allowed; }
+.pick-card.chosen { border-color: var(--gold); background: rgba(245, 211, 107, 0.12); box-shadow: 0 0 0 1px var(--gold); }
+.spend-count { display: flex; align-items: center; gap: 8px; }
+.spend-count .icon-btn { width: 36px; height: 36px; font-size: 20px; font-weight: 800; }
+.spend-count .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.spend-num { width: 140px; }
+.spend-num input { padding-right: 64px; text-align: right; }
+.spend-hours { margin-left: 6px; color: var(--gold); font-weight: 800; }
+.spend-confirm { align-items: center; text-align: center; gap: 8px; }
+.spend-confirm p { margin: 0; font-size: 18px; }
+.spend-confirm b { color: var(--gold); }
+.spend-confirm small { color: var(--muted); font-size: 13px; }
+
 .te-worth { width: 140px; }
 .te-worth input { padding-right: 36px; }

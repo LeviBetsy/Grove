@@ -71,9 +71,13 @@ the wording and rules per mode (routine: total ≤ 100; journey: total exactly 1
    routines and older records). The clock starts via `POST .../timer` or the first tick
    (`startClock`). The server decides `result`: `'beat'` when the last task is ticked before `endsAt`
    (`checkFinish`), `'missed'` once `endsAt` passes (`settleTimers()` runs at the top of every API
-   request, so it's settled even if the app was closed). Once set it never changes. These log
+   request, so it's settled even if the app was closed). `'missed'` never changes. Unticking a task on a
+   finished day (`resumeClock`) clears `finishedAt`, pushes `endsAt` on by the time it sat finished
+   (so time already used still counts), and turns `'beat'` back to `null`. These log
    `kind: "timer"` history entries. The UI (`renderRace`, `raceLabel`) only displays it, and at 0:00
-   re-fetches (`settleClock`) to pick up the server's verdict.
+   re-fetches (`settleClock`) to pick up the server's verdict. A time's-up alarm (`scheduleAlarms`,
+   run from `renderTabs`, keeps one timeout per running race keyed `id@endsAt`; `ringAlarm` plays a
+   Web Audio chime via `playAlarm` and, if the tab is hidden, shows a `Notification`) rings once per deadline.
    A `'missed'` day loses Grove worth: one step at the deadline, then one per full 15 min late (to
    `finishedAt`, or now while unfinished): five even steps from its worth down to 10% at 60 min (`worthOf` in `app.js`; the stored
    `worth` is `baseWorth`). Client-side and derived, like the rest of the Grove; a 30 s interval
@@ -121,6 +125,28 @@ Grove view (`openGrove`, hash `#grove`, opened from the `#groveBtn` logo) reuses
 log (`groveTimeline` → `renderGroveTrail`). `renderGrove()` runs on every `renderTabs()`
 and toasts tokens sprouting/withering by comparing with `groveSeen`. `parseWorth` in `server.js` validates it.
 
+**Token types.** Tokens are typed: `terraform` (shovel), `recruit` (tree), `design` (blueprint),
+`building` (hammer) (`TOKEN_TYPES` in both files; coins drawn by `coinSvg`). A type with
+`locked: true` in `app.js` (currently all but `design`) shows as a greyed "Locked" card that can't be picked. The only stored Grove data is
+an append-only log, `db.grove.picks: [{ type, at }]` in `projects.json` (loaded into `state.grove`):
+**pick i is the type of token i+1**. The user picks *before* earning, and picks are never edited or
+removed, so a withered token's type (and any later picks) stay locked in for the next refill. A pick is
+needed (`needsPick`, shown as the `#groveAlert` ❗ on the logo and the `#grovePick` cards in the Grove view)
+while `picks.length <= tokens`; earned slots without a pick show as a "?" coin. The server only checks
+`slot === picks.length` (double-click/stale guard); whether a pick is allowed is up to the client,
+since the Grove total is derived there. `migrateGrove()` seeded the 7 pre-type tokens at startup.
+
+**Spending tokens (the campfire).** The 🔥 `#campfireBtn` under `#groveTokens` opens `#spendSheet`
+(`openSpend` → pick type + count → `submitSpend` asks "Are you sure?" → `POST /api/grove/spends`). Every
+token is worth **1 hour** whatever its type. Spends are a second append-only log,
+`db.grove.spends: [{ id, type, count, at, endsAt }]` (absent on older files, so read it as `|| []`);
+the server sets `endsAt = at + count h` and, like picks, only checks the `slot === spends.length` guard
+(plus type and a whole count 1–24). Tokens in hand are derived (`tokenPurse` in `app.js`): typed tokens
+grown per type minus spent per type, plus unchosen ones; spent coins leave `#groveTokens` and the
+topbar 🪙 count. Burning timers render in `#groveFires` (`renderCampfire`, reusing `.race` styles), and
+`scheduleAlarms` keeps one timeout per fire (key `fire:<id>`) that calls `ringFire` (same `playAlarm`
+chime + `Notification`). The Grove trail logs spends and burn-outs. No early stop, by design.
+
 Any kind can be **archived** (`archived`, `archivedAt`). Archived trackers leave the tabs, show
 in the Archive menu and are read-only until restored.
 
@@ -153,6 +179,9 @@ POST   /api/templates                    { name, minutes?, worth?, tasks: [{ nam
 PUT    /api/templates/:id                { name, minutes?, worth?, tasks, date? }   id never changes; date = today's day to re-worth
 DELETE /api/templates/:id                                  existing day instances are kept
 POST   /api/templates/:id/start          { date: "YYYY-MM-DD" }  returns the existing instance if one exists
+GET    /api/grove                                          { picks: [{ type, at }], spends: [{ id, type, count, at, endsAt }] }
+POST   /api/grove/picks                  { type, slot }    lock in the next token type; slot must equal picks.length
+POST   /api/grove/spends                 { type, count, slot }  spend tokens: a count-hour timer; slot must equal spends.length
 ```
 
 Errors come back as `{ error: "message" }`. The frontend shows that message in a toast, so write

@@ -81,6 +81,22 @@ function migratePlainProjects() {
   return changed;
 }
 
+// Grove tokens have a type, picked before they're earned. db.grove.picks is an append-only log:
+// pick i is the type of token i+1. Tokens themselves stay derived (on the client) from the trackers,
+// so a token that withers keeps its pick, and refilling grows the same type again.
+const TOKEN_TYPES = ['terraform', 'recruit', 'design', 'building'];
+// Spending tokens at the campfire (db.grove.spends, append-only): each token buys one hour on a timer.
+const HOUR_MS = 60 * 60 * 1000;
+const MAX_SPEND = 24;
+// The 7 generic tokens grown before types existed
+const FIRST_PICKS = ['design', 'design', 'terraform', 'terraform', 'building', 'building', 'recruit'];
+function migrateGrove() {
+  if (db.grove && Array.isArray(db.grove.picks)) return false;
+  const at = now();
+  db.grove = { ...(db.grove || {}), picks: FIRST_PICKS.map((type) => ({ type, at })) };
+  return true;
+}
+
 function saveDb() {
   const snapshot = JSON.stringify(db, null, 2);
   writeQueue = writeQueue.then(async () => {
@@ -237,6 +253,52 @@ function journeyProgress(p) {
   return round1(Math.min(100, p.stages.reduce((s, st) => s + (st.share * st.progress) / 100, 0)));
 }
 
+// ---------- task shapes (JSDoc only: these are plain JSON objects, not classes) ----------
+// Stage tasks and smaller tasks (subtasks) belong to journeys. A routine day has its own,
+// different kind of task (RoutineTask), which carries a percent and has no subtasks.
+
+/**
+ * A smaller task under a stage task. One level only: a subtask never has subtasks of its own.
+ * @typedef {object} Subtask
+ * @property {string} id        "u1", "u2", … unique within its task (`nextId(list, 'u')`)
+ * @property {string} name      cleaned by `cleanName` (trimmed, ≤ 60 chars)
+ * @property {boolean} done
+ * @property {string|null} [doneAt]  ISO time it was ticked; null once unticked, absent until first ticked
+ */
+
+/**
+ * A task on a journey stage. Each task is an equal slice of its stage's bar (`stageFromTasks`).
+ * With subtasks, its slice is split evenly between them (`taskFraction`) and `done`/`doneAt`
+ * are derived (ticked once all subtasks are done), so it can't be ticked directly.
+ * @typedef {object} StageTask
+ * @property {string} id        "t1", "t2", … unique within its stage (`nextId(list, 't')`)
+ * @property {string} name      cleaned by `cleanName` (trimmed, ≤ 60 chars)
+ * @property {boolean} done
+ * @property {string|null} [doneAt]  ISO time it was ticked; null once unticked, absent until first ticked
+ * @property {Subtask[]} [subtasks]  absent when it has none (never left as an empty list)
+ */
+
+/**
+ * A stage of a journey. While it has tasks its progress is derived from them.
+ * @typedef {object} Stage
+ * @property {string} id        "s1", "s2", …
+ * @property {string} name
+ * @property {number} share     % of the journey this stage is worth; all shares add up to 100
+ * @property {number} progress  0–100, one decimal
+ * @property {StageTask[]} [tasks]  absent when it has none
+ */
+
+/**
+ * A task on a routine day instance (copied from its template). Not a StageTask: it has its own
+ * percent of the routine's flask and no subtasks.
+ * @typedef {object} RoutineTask
+ * @property {string} id
+ * @property {string} name
+ * @property {number} percent   > 0 and ≤ 100; a routine's percents total ≤ 100
+ * @property {boolean} done
+ * @property {string|null} [doneAt]  absent until first ticked
+ */
+
 const MAX_STAGE_TASKS = 50;
 const MAX_SUBTASKS = 30;
 
@@ -245,12 +307,14 @@ const nextId = (list, prefix) =>
   prefix + (list.reduce((m, x) => Math.max(m, Number(new RegExp(`^${prefix}(\\d+)$`).exec(x.id)?.[1]) || 0), 0) + 1);
 
 // How much of its slice a task has earned: 0 or 1, or the share of its smaller tasks that are done.
+/** @type {(t: StageTask) => number} */
 const taskFraction = (t) =>
   t.subtasks && t.subtasks.length ? t.subtasks.filter((u) => u.done).length / t.subtasks.length : t.done ? 1 : 0;
 
 // A stage with tasks fills from them: each task is an equal slice of the stage's bar, and a task
 // with smaller tasks splits its slice evenly between them (and ticks itself once they're all done).
 // One level deep only. A stage without tasks keeps whatever progress it was given by hand.
+/** @param {Stage} stage */
 function stageFromTasks(stage) {
   if (!stage.tasks || !stage.tasks.length) return;
   for (const t of stage.tasks) {
@@ -313,7 +377,8 @@ function recordTaskProgress(p, note, kind) {
 // ---------- racing the clock (routines with a time limit) ----------
 // A timed routine day carries timer: { minutes, startedAt, endsAt, result, finishedAt }.
 // result is null while it's undecided, then 'beat' (every task ticked before endsAt) or
-// 'missed' (endsAt passed first). Once decided it never changes.
+// 'missed' (endsAt passed first). A 'missed' never changes; a 'beat' goes back to undecided if a
+// task is unticked, with the clock resuming where it stopped (resumeClock).
 const allTasksDone = (p) => p.tasks.every((t) => t.done);
 const pad2 = (n) => String(n).padStart(2, '0');
 function clockText(ms) {
@@ -358,6 +423,25 @@ function checkFinish(p) {
   p.history.push({
     at: t, value: p.progress, delta: 0, kind: 'timer',
     note: tm.result === 'beat' ? `Beat the clock · ${clockText(left)} to spare` : `Every task done · ${clockText(left)} after the clock ran out`,
+  });
+}
+
+// After an untick on a finished race: the clock picks up where it stopped. It was paused from
+// finishedAt until now, so the deadline moves on by that much, keeping the time already used.
+// A 'beat' goes back to undecided (and can be beaten again, or missed); a 'missed' stays missed,
+// and its lateness carries on from where it stopped.
+function resumeClock(p) {
+  const tm = p.timer;
+  if (!tm || !tm.finishedAt || allTasksDone(p)) return;
+  const t = now();
+  const paused = Math.max(0, Date.parse(t) - Date.parse(tm.finishedAt));
+  tm.endsAt = new Date(Date.parse(tm.endsAt) + paused).toISOString();
+  tm.finishedAt = null;
+  if (tm.result === 'beat') tm.result = null;
+  const left = Date.parse(tm.endsAt) - Date.parse(t);
+  p.history.push({
+    at: t, value: p.progress, delta: 0, kind: 'timer',
+    note: tm.result ? `Clock running again · ${clockText(left)} late` : `Clock running again · ${clockText(left)} left`,
   });
 }
 
@@ -486,6 +570,38 @@ async function handleApi(req, res, url) {
     return send(res, 404, { error: 'Not found' });
   }
 
+  // /api/grove — the token pick log and the spend log
+  if (parts[1] === 'grove') {
+    const picks = db.grove.picks;
+    const spends = db.grove.spends || [];
+    if (parts.length === 2 && method === 'GET') return send(res, 200, { picks, spends });
+    // POST /api/grove/spends {type, count, slot} — spend tokens at the campfire: one hour on the clock
+    // per token. Append-only, like picks. Whether there are enough tokens is up to the client (the Grove
+    // total is derived there); slot must equal spends.length so a double click can't spend twice.
+    if (parts.length === 3 && parts[2] === 'spends' && method === 'POST') {
+      const body = await readBody(req);
+      if (!TOKEN_TYPES.includes(body.type)) return send(res, 400, { error: 'Pick a token type to spend: Terraform, Recruit, Design or Building.' });
+      const count = Number(body.count);
+      if (!Number.isInteger(count) || count < 1 || count > MAX_SPEND) return send(res, 400, { error: `Spend a whole number of tokens, from 1 to ${MAX_SPEND}.` });
+      if (body.slot !== spends.length) return send(res, 409, { error: 'Those tokens were already spent. Refresh to see your fire.' });
+      const at = now();
+      const endsAt = new Date(Date.parse(at) + count * HOUR_MS).toISOString();
+      db.grove.spends = [...spends, { id: crypto.randomUUID(), type: body.type, count, at, endsAt }];
+      await saveDb();
+      return send(res, 201, { picks, spends: db.grove.spends });
+    }
+    // POST /api/grove/picks {type, slot} — lock in the type of the next token. Picks are never changed.
+    if (parts.length === 3 && parts[2] === 'picks' && method === 'POST') {
+      const body = await readBody(req);
+      if (!TOKEN_TYPES.includes(body.type)) return send(res, 400, { error: 'Pick a token type: Terraform, Recruit, Design or Building.' });
+      if (body.slot !== picks.length) return send(res, 409, { error: 'That token was already chosen. Refresh to see it.' });
+      picks.push({ type: body.type, at: now() });
+      await saveDb();
+      return send(res, 201, { picks, spends });
+    }
+    return send(res, 404, { error: 'Not found' });
+  }
+
   if (parts[1] !== 'projects') return send(res, 404, { error: 'Not found' });
 
   // /api/projects
@@ -562,7 +678,8 @@ async function handleApi(req, res, url) {
     task.doneAt = done ? now() : null;
     if (!done) project.completed = false; // un-ticking a task takes the potion back off 100
     recordTaskProgress(project, done ? task.name : `Unchecked: ${task.name}`, 'task');
-    checkFinish(project);
+    if (done) checkFinish(project);
+    else resumeClock(project); // unticking a finished race starts the clock again
     await saveDb();
     return send(res, 200, project);
   }
@@ -848,6 +965,10 @@ if (migrated) {
   if (!fs.existsSync(backup)) fs.copyFileSync(DATA_FILE, backup);
   saveDb();
   console.log(`\n  Turned ${migrated} plain project${migrated === 1 ? '' : 's'} into journeys (old file kept at ${backup}).`);
+}
+if (migrateGrove()) {
+  saveDb();
+  console.log(`\n  Gave your ${FIRST_PICKS.length} Grove tokens their types (2 Design, 2 Terraform, 2 Building, 1 Recruit).`);
 }
 
 server.listen(PORT, HOST, () => {

@@ -101,6 +101,9 @@ const api = {
   complete: (id) => req('POST', `/api/projects/${id}/complete`),
   startClock: (id) => req('POST', `/api/projects/${id}/timer`),
   archive: (id, archived) => req('POST', `/api/projects/${id}/archive`, { archived }),
+  grove: () => req('GET', '/api/grove'),
+  pickToken: (type, slot) => req('POST', '/api/grove/picks', { type, slot }),
+  spendTokens: (type, count, slot) => req('POST', '/api/grove/spends', { type, count, slot }),
 };
 
 // Local calendar day, e.g. "2026-11-15" (routines are one per day)
@@ -506,7 +509,7 @@ function sparks(x, y, n = 14) {
 // ============================================================
 //  App state + rendering
 // ============================================================
-const state = { projects: [], templates: [], activeId: null };
+const state = { projects: [], templates: [], activeId: null, grove: { picks: [], spends: [] } };
 const active = () => state.projects.find((p) => p.id === state.activeId) || null;
 const liveProjects = () => state.projects.filter((p) => !p.archived);
 const archivedProjects = () => state.projects.filter((p) => p.archived);
@@ -520,6 +523,7 @@ function replaceProject(p) {
 }
 
 function renderTabs() {
+  scheduleAlarms();
   const n = archivedProjects().length;
   $('#archiveCount').textContent = n ? n : '';
   $('#tabs').innerHTML = liveProjects().map((p) => {
@@ -664,7 +668,7 @@ function renderRace(p) {
       $('#raceTime').textContent = clockText(left, true);
       $('#raceBar').style.width = `${clamp(left / (tm.minutes * 60000), 0, 1) * 100}%`;
       el.classList.toggle('urgent', left < Math.min(60000, tm.minutes * 6000)); // last minute (or last 10%)
-      if (left <= 0) { clearInterval(raceTick); raceTick = null; settleClock(id); }
+      if (left <= 0) { clearInterval(raceTick); raceTick = null; ringAlarm(id, `${id}@${tm.endsAt}`); settleClock(id); }
     };
     update();
     if (timeLeft(tm) > 0) raceTick = setInterval(update, 250);
@@ -687,9 +691,108 @@ function settleClock(id) {
   });
 }
 
+// ---------- alarm when a race runs out ----------
+// One timeout per running race (any routine, not just the open one). Rings once per deadline:
+// unticking a finished day moves endsAt, which gives it a new key and a new alarm.
+let audioCtx = null;
+const alarmTimers = new Map(); // key → timeout id
+const alarmRung = new Set();
+const alarmKey = (p) => `${p.id}@${p.timer.endsAt}`;
+
+// Browsers keep audio muted until the page has been clicked or typed into, so unlock it then
+function unlockAudio() {
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch { /* no audio, the toast and notification still show */ }
+}
+
+// Three rounds of a rising three-note chime, about 3 seconds
+function playAlarm() {
+  unlockAudio();
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + 0.05;
+  for (let round = 0; round < 3; round++) {
+    [660, 880, 1100].forEach((freq, i) => {
+      const at = t0 + round * 1.0 + i * 0.16;
+      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.35, at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.5);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(at);
+      osc.stop(at + 0.55);
+    });
+  }
+}
+
+// Ask once, from a click, so a background tab can still pop a macOS notification
+function askNotify() {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+}
+
+function ringAlarm(id, key) {
+  alarmTimers.delete(key);
+  if (alarmRung.has(key)) return;
+  const p = state.projects.find((x) => x.id === id);
+  if (!p?.timer || alarmKey(p) !== key || p.timer.result || p.archived) return;
+  alarmRung.add(key);
+  playAlarm();
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(`⌛ Time's up on “${p.name}”`, { body: `The ${p.timer.minutes} minutes ran out. You can still tick the rest off.`, tag: key });
+      n.onclick = () => { window.focus(); location.hash = id; n.close(); };
+    } catch { /* notifications unavailable */ }
+  }
+  settleClock(id); // fetch the server's 'missed' verdict and toast it
+}
+
+// A campfire timer (tokens spent in the Grove) burned down
+function ringFire(sid, key) {
+  alarmTimers.delete(key);
+  if (alarmRung.has(key)) return;
+  const s = spendsOf().find((x) => x.id === sid);
+  if (!s) return;
+  alarmRung.add(key);
+  playAlarm();
+  const name = typeName(s.type);
+  const title = `${TOKEN_TYPES[s.type]?.emoji || '🔥'} ${name} time is up`;
+  const body = `The ${plural(s.count, 'hour')} from ${plural(s.count, `${name} token`)} burned down.`;
+  toast(`${title}. ${body}`);
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(title, { body, tag: key });
+      n.onclick = () => { window.focus(); location.hash = 'grove'; n.close(); };
+    } catch { /* notifications unavailable */ }
+  }
+  renderGrove(); // the fire goes out in the Grove view
+}
+
+// Called on every renderTabs(): keep exactly one pending alarm per running race and per burning campfire
+function scheduleAlarms() {
+  const want = new Map();
+  for (const p of state.projects) {
+    const tm = p.tasks && p.timer;
+    if (!tm || !tm.startedAt || tm.result || tm.finishedAt || p.archived) continue;
+    const key = alarmKey(p), left = timeLeft(tm);
+    if (left > 0 && !alarmRung.has(key)) want.set(key, { ring: () => ringAlarm(p.id, key), left });
+  }
+  for (const s of spendsOf()) {
+    const key = `fire:${s.id}`, left = fireLeft(s);
+    if (left > 0 && !alarmRung.has(key)) want.set(key, { ring: () => ringFire(s.id, key), left });
+  }
+  for (const [key, t] of alarmTimers) if (!want.has(key)) { clearTimeout(t); alarmTimers.delete(key); }
+  for (const [key, { ring, left }] of want) {
+    if (!alarmTimers.has(key)) alarmTimers.set(key, setTimeout(ring, left + 50));
+  }
+}
+
 function startClock() {
   const p = active();
   if (!p || !p.timer) return;
+  askNotify();
   const id = p.id;
   queue = queue.then(async () => {
     try {
@@ -772,15 +875,20 @@ function toggleTask(taskId) {
   if (!p || p.archived) return;
   const task = p.tasks.find((t) => t.id === taskId);
   if (!task) return;
+  if (p.timer && !p.timer.startedAt) askNotify(); // this tick starts the clock
   const id = p.id, done = !task.done;
   queue = queue.then(async () => {
     try {
       const before = state.projects.find((x) => x.id === id);
       const wasStarted = !!before?.timer?.startedAt, wasBeat = before?.timer?.result === 'beat', prev = before?.progress ?? 0;
+      const wasFinished = !!before?.timer?.finishedAt;
       const updated = await api.toggleTask(id, taskId, done);
       applyUpdate(updated);
       const tm = updated.timer;
-      if (tm?.result === 'beat' && !wasBeat) {
+      if (wasFinished && tm && !tm.finishedAt) {
+        toast(tm.result === 'missed' ? '⏱ The clock is running again, still late'
+          : `⏱ The clock is running again: ${clockText(timeLeft(tm), true)} left`);
+      } else if (tm?.result === 'beat' && !wasBeat) {
         // after the "potion is brewed" toast when this tick also filled it
         setTimeout(() => toast(`🏆 You beat the clock with ${finishGap(tm)} to spare!`), updated.progress >= 100 && prev < 100 ? 3600 : 0);
       } else if (tm?.startedAt && !wasStarted) {
@@ -877,34 +985,125 @@ let groveReturnId = null; // the tracker to go back to when the Grove view close
 let groveSeen = null;     // the Grove as last drawn, to spot tokens sprouting or withering
 let groveWrap = null;
 
-// A Grove token: a little pixel tree on a gold-rimmed coin
-const TOKEN_SVG = (() => {
-  const rows = ['....G....', '...GGG...', '..GGLGG..', '...GGG...', '..GGGLG..', '.GGLGGGG.', '..GGGGG..', '.GGGGLGG.', 'GGGGGGGGG', '....T....', '....T....'];
-  const col = { G: '#4fae63', L: '#9be7a0', T: '#b07a4f' };
+// A Grove token: a little pixel picture (9×11) on a gold-rimmed coin
+const coinSvg = (rows, col, rim = '#f5d36b') => {
   const px = rows.flatMap((r, y) => [...r].map((c, x) => (col[c] ? `<rect x="${x + 3.5}" y="${y + 2.5}" width="1.02" height="1.02" fill="${col[c]}"/>` : ''))).join('');
-  return `<svg viewBox="0 0 16 16" width="42" height="42" shape-rendering="crispEdges" aria-hidden="true"><circle cx="8" cy="8" r="7.4" fill="#0e2a21" stroke="#f5d36b" stroke-width="1.1" shape-rendering="geometricPrecision"/>${px}</svg>`;
-})();
+  return `<svg viewBox="0 0 16 16" width="42" height="42" shape-rendering="crispEdges" aria-hidden="true"><circle cx="8" cy="8" r="7.4" fill="#0e2a21" stroke="${rim}" stroke-width="1.1" shape-rendering="geometricPrecision"/>${px}</svg>`;
+};
+const WOOD = '#b07a4f', STEEL = '#aebdc4', SHINE = '#e8f0f2';
+
+// Token types. Each token's type is picked before it's earned and kept in state.grove.picks
+// (pick i = token i+1, never changed), so a token that withers grows back as the same type.
+const TOKEN_TYPES = {
+  terraform: {
+    name: 'Terraform', emoji: '⛏️', blurb: 'Shape the land', locked: true, // the coin is a shovel; 🪏 is too new for macOS 15.1
+    svg: coinSvg(['...TTT...', '...T.T...', '....T....', '....T....', '....T....', '....T....', '..SSSSS..', '..SLSSS..', '..SLSSS..', '...SSS...', '....S....'],
+      { T: WOOD, S: STEEL, L: SHINE }),
+  },
+  recruit: {
+    name: 'Recruit', emoji: '🌳', blurb: 'Bring someone new to the Grove', locked: true,
+    svg: coinSvg(['....G....', '...GGG...', '..GGLGG..', '...GGG...', '..GGGLG..', '.GGLGGGG.', '..GGGGG..', '.GGGGLGG.', 'GGGGGGGGG', '....T....', '....T....'],
+      { G: '#4fae63', L: '#9be7a0', T: WOOD }),
+  },
+  design: {
+    name: 'Design', emoji: '📐', blurb: 'Draw up the plans',
+    svg: coinSvg(['.........', 'BBBBBBBBB', 'BBBBWBBBB', 'BBBWBWBBB', 'BBWBBBWBB', 'BWWWWWWWB', 'BBWBBBWBB', 'BBWBWBWBB', 'BBWBWBWBB', 'BBWWWWWBB', 'BBBBBBBBB'],
+      { B: '#3b7dd8', W: '#cfe6ff' }),
+  },
+  building: {
+    name: 'Building', emoji: '🔨', blurb: 'Raise something new', locked: true,
+    svg: coinSvg(['.........', '.HHHHHHH.', 'HHLLLLHHH', 'HHHHHHHH.', '.HHHHHHH.', '....T....', '....T....', '....T....', '....T....', '...TTT...', '...TTT...'],
+      { H: STEEL, L: SHINE, T: WOOD }),
+  },
+};
+// an earned token whose type hasn't been picked yet
+const UNCHOSEN_SVG = coinSvg(['.........', '...QQQ...', '..Q...Q..', '......Q..', '.....Q...', '....Q....', '....Q....', '.........', '....Q....', '.........', '.........'],
+  { Q: '#f5d36b' }, 'rgba(245, 211, 107, 0.45)');
+const tokenTypeAt = (i) => state.grove.picks[i]?.type || null; // the type of token i+1
+const typeName = (t) => TOKEN_TYPES[t]?.name || 'unchosen';
+// The next token (or one already grown) has no type yet, so it's time to choose
+const needsPick = (tokens = groveState().tokens) => state.grove.picks.length <= tokens;
+// "a Design" / "An unchosen"
+const aType = (t, cap = false) => {
+  const n = typeName(t);
+  const a = /^[aeiou]/i.test(n) ? 'an' : 'a';
+  return `${cap ? a[0].toUpperCase() + a.slice(1) : a} ${n}`;
+};
+
+// ---------- spending tokens at the campfire ----------
+// state.grove.spends is append-only ({ id, type, count, at, endsAt }); each token buys one hour on a timer.
+// Tokens grown stay derived from the trackers, so what's left to spend is grown minus spent, per type.
+// A spent token that later withers leaves its type short until it grows back.
+const HOUR_MS = 60 * 60 * 1000;
+const spendsOf = () => state.grove.spends || [];
+const fireLeft = (s) => Date.parse(s.endsAt) - Date.now();
+const burningFires = () => spendsOf().filter((s) => fireLeft(s) > 0);
+function tokenPurse(tokens = groveState().tokens) {
+  const grown = {}, spent = {}, left = {};
+  let unchosen = 0;
+  for (let i = 0; i < tokens; i++) {
+    const t = tokenTypeAt(i);
+    if (t) grown[t] = (grown[t] || 0) + 1; else unchosen++;
+  }
+  for (const s of spendsOf()) spent[s.type] = (spent[s.type] || 0) + s.count;
+  let spendable = 0;
+  for (const t of Object.keys(TOKEN_TYPES)) { left[t] = Math.max(0, (grown[t] || 0) - (spent[t] || 0)); spendable += left[t]; }
+  const spentAll = Object.values(spent).reduce((a, b) => a + b, 0);
+  // in hand = the ones that can be spent, plus grown ones still waiting for a type
+  return { grown, spent, left, unchosen, spendable, spentAll, inHand: spendable + unchosen };
+}
+
+// Pixel-art campfire (16×16): flames flicker in two layers (CSS), embers drift up
+const pixRects = (rows, col) => rows.flatMap((r, y) => [...r].map((c, x) => (col[c] ? `<rect x="${x}" y="${y}" width="1.02" height="1.02" fill="${col[c]}"/>` : ''))).join('');
+const FIRE_ROWS = [
+  '................', '.......F........', '.......FF.......', '......FFF.F.....', '......FYFFF.....',
+  '.....FFYYFF.....', '....F.FYYYFF....', '....FFYYWYYF....', '...FFYYWWYYFF...', '...FYYWWWWYYF...',
+  '...FYYWWWWYYF...', '....FYYWWYYF....',
+];
+const LOG_ROWS = [
+  '..LL.FFFFFF.LL..', '..ELLL....LLLE..', '.....LLLLLL.....', '.SS.ELL..LLE.SS.',
+];
+const CAMPFIRE_SVG = `<svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+  <g class="flame">${pixRects(FIRE_ROWS, { F: '#ff7a2f', Y: '#ff7a2f', W: '#ff7a2f' })}</g>
+  <g class="flame flame-in">${pixRects(FIRE_ROWS, { Y: '#ffc94a', W: '#fff1b8' })}</g>
+  <g transform="translate(0 12)">${pixRects(LOG_ROWS, { L: '#8a5a36', E: '#d9a571', S: '#6f7f86', F: '#c8461f' })}</g>
+  <rect class="ember" x="5" y="2" width="1" height="1" fill="#ffc94a"/><rect class="ember" x="11" y="1" width="1" height="1" fill="#ff7a2f"/>
+</svg>`;
 
 // Topbar badge, token toasts, and the Grove view when it's open. Runs on every renderTabs().
 function renderGrove() {
   const g = groveState();
+  const purse = tokenPurse(g.tokens);
   $('#groveBar').style.cssText = legFillStyle(g.bar);
-  $('#groveTokenCount').innerHTML = g.tokens ? `<span aria-hidden="true">🌳</span> ${g.tokens}` : '';
+  $('#groveTokenCount').innerHTML = purse.inHand ? `<span aria-hidden="true">🪙</span> ${purse.inHand}` : '';
   const btn = $('#groveBtn');
-  btn.title = `Your Grove: ${fmtPct(g.bar)}% · ${fmtPct(round1(100 - g.bar))}% to the next token · ${plural(g.tokens, 'token')}`;
+  const choose = needsPick(g.tokens);
+  $('#groveAlert').hidden = !choose;
+  const fires = burningFires().length ? ` · 🔥 ${plural(burningFires().length, 'fire')} burning` : '';
+  btn.title = choose
+    ? `A token is ready to choose. Open your Grove. (${fmtPct(g.bar)}% · ${plural(purse.inHand, 'token')} in hand)`
+    : `Your Grove: ${fmtPct(g.bar)}% · ${fmtPct(round1(100 - g.bar))}% to the next token (${typeName(tokenTypeAt(g.tokens))}) · ${plural(purse.inHand, 'token')} in hand${fires}`;
   btn.setAttribute('aria-pressed', String(groveOpen));
 
   const before = groveSeen;
   groveSeen = g;
   const gained = before ? g.tokens - before.tokens : 0;
   if (gained > 0) {
+    const t = tokenTypeAt(g.tokens - 1);
+    const what = gained === 1
+      ? (t ? `${TOKEN_TYPES[t].emoji} ${aType(t, true)} token sprouted!` : '🪙 A Grove token sprouted!')
+      : `🪙 ${gained} Grove tokens sprouted!`;
+    const next = choose ? ' Choose your next token in the Grove.' : ` You have ${purse.inHand}.`;
     // after a "potion is brewed" toast, if this change also filled a tracker
-    setTimeout(() => toast(gained === 1 ? `🌳 A Grove token sprouted! You have ${g.tokens}` : `🌳 ${gained} Grove tokens sprouted! You have ${g.tokens}`), 2700);
+    setTimeout(() => toast(what + next), 2700);
     btn.classList.remove('sprout');
     void btn.offsetWidth; // restart the animation
     btn.classList.add('sprout');
   } else if (gained < 0) {
-    toast(gained === -1 ? `🍂 A Grove token withered. You have ${g.tokens}` : `🍂 ${-gained} Grove tokens withered. You have ${g.tokens}`);
+    const t = tokenTypeAt(before.tokens - 1);
+    toast(gained === -1
+      ? `🍂 ${aType(t, true)} token withered. You have ${purse.inHand}${t ? `; it grows back as ${typeName(t)}` : ''}.`
+      : `🍂 ${-gained} Grove tokens withered. You have ${purse.inHand}; they grow back as the same types.`);
   }
 
   if (!groveOpen) return;
@@ -949,13 +1148,187 @@ function leaveGrove() {
 }
 
 function renderGrovePanel(g) {
-  $('#groveSum').innerHTML = g.tokens
-    ? `<b>${plural(g.tokens, 'Grove token')}</b> grown · ${fmtPct(round1(100 - g.bar))}% to the next`
-    : `No Grove tokens yet. Fill the bar to 100% to grow your first tree.`;
+  const purse = tokenPurse(g.tokens);
+  const counts = { ...purse.left, '?': purse.unchosen };
+  const byType = [...Object.keys(TOKEN_TYPES), '?'].filter((t) => counts[t])
+    .map((t) => `${counts[t]} ${t === '?' ? 'unchosen' : typeName(t)}`).join(' · ');
+  const spent = purse.spentAll ? `${byType ? ' · ' : ''}${purse.spentAll} spent at the campfire` : '';
+  $('#groveSum').innerHTML = !g.tokens
+    ? `No Grove tokens yet. Fill the bar to 100% to grow your first one.`
+    : purse.inHand
+      ? `<b>${plural(purse.inHand, 'Grove token')}</b> in hand · ${byType}${spent}`
+      : `<b>No tokens in hand</b> · ${plural(g.tokens, 'token')} grown${spent}`;
+  // the tokens in hand, in the order they grew; spent ones leave the list (the earliest of their type)
+  const skip = { ...purse.spent };
+  const shown = [];
+  for (let i = 0; i < g.tokens; i++) {
+    const t = tokenTypeAt(i);
+    if (t && skip[t] > 0) { skip[t]--; continue; }
+    shown.push({ t, i });
+  }
   const MAX_SHOWN = 40;
-  $('#groveTokens').innerHTML = Array.from({ length: Math.min(g.tokens, MAX_SHOWN) },
-    (_, i) => `<span class="token" style="--i:${i}" title="Grove token ${i + 1}">${TOKEN_SVG}</span>`).join('') +
-    (g.tokens > MAX_SHOWN ? `<span class="token-more">×${g.tokens}</span>` : '');
+  $('#groveTokens').innerHTML = shown.slice(0, MAX_SHOWN).map(({ t, i }, k) =>
+    `<span class="token${t ? '' : ' unchosen'}" style="--i:${k}" title="Token ${i + 1}: ${t ? typeName(t) : 'not chosen yet'}">${t ? TOKEN_TYPES[t].svg : UNCHOSEN_SVG}</span>`,
+  ).join('') + (shown.length > MAX_SHOWN ? `<span class="token-more">×${shown.length}</span>` : '');
+  renderCampfire(purse);
+  renderGrovePick(g);
+}
+
+// The campfire button and any timers burning from spent tokens
+let fireTick = null;
+function renderCampfire(purse) {
+  const btn = $('#campfireBtn');
+  btn.disabled = !purse.spendable;
+  $('#campfireHint').textContent = purse.spendable
+    ? `${plural(purse.spendable, 'token')} to spend · 1 token = 1 hour`
+    : purse.unchosen ? 'Choose a type for your new token first' : 'Grow a token to light the fire';
+  btn.title = purse.spendable ? 'Spend Grove tokens on hours of time' : 'No tokens to spend yet';
+
+  clearInterval(fireTick);
+  fireTick = null;
+  const fires = burningFires();
+  $('#groveFires').innerHTML = fires.map((s) => {
+    const t = TOKEN_TYPES[s.type];
+    const ends = new Date(s.endsAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return `<div class="race running fire" data-fire="${s.id}">
+      <span class="race-time" data-fire-left></span>
+      <span class="race-text"><b>${t?.emoji || '🔥'} ${typeName(s.type)}</b><small>${plural(s.count, 'hour')} from ${plural(s.count, `${typeName(s.type)} token`)} · the alarm rings at ${ends}</small></span>
+      <span class="race-bar"><i data-fire-bar></i></span>
+    </div>`;
+  }).join('');
+  if (!fires.length) return;
+  const update = () => {
+    if (!groveOpen) { clearInterval(fireTick); fireTick = null; return; }
+    let out = false;
+    for (const s of fires) {
+      const el = $(`#groveFires [data-fire="${s.id}"]`);
+      if (!el) continue;
+      const left = fireLeft(s);
+      if (left <= 0) out = true;
+      el.querySelector('[data-fire-left]').textContent = clockText(left, true);
+      el.querySelector('[data-fire-bar]').style.width = `${clamp(left / (s.count * HOUR_MS), 0, 1) * 100}%`;
+      el.classList.toggle('urgent', left > 0 && left < 60000);
+    }
+    if (out) renderGrove(); // a fire burned out: drop it and log it on the Trail
+  };
+  update();
+  fireTick = setInterval(update, 1000);
+}
+
+// ---------- the spend dialog: which type, how many, then "are you sure?" ----------
+const spendDraft = { type: null, count: 1, confirming: false };
+
+function openSpend() {
+  const purse = tokenPurse();
+  const first = Object.keys(TOKEN_TYPES).find((t) => purse.left[t] > 0);
+  if (!first) { toast('No tokens to spend yet. Fill the Grove bar to grow one.'); return; }
+  Object.assign(spendDraft, { type: purse.left[spendDraft.type] > 0 ? spendDraft.type : first, count: 1, confirming: false });
+  $('#spendError').textContent = '';
+  renderSpend();
+  $('#spendSheet').showModal();
+  $(`#spendTypes [data-spend-type="${spendDraft.type}"]`)?.focus();
+}
+
+function renderSpend() {
+  const { left } = tokenPurse();
+  const max = left[spendDraft.type] || 0;
+  if (max) spendDraft.count = clamp(spendDraft.count, 1, max);
+  const { type, count, confirming } = spendDraft;
+  const name = typeName(type);
+  $('#spendTypes').innerHTML = Object.entries(TOKEN_TYPES).map(([id, t]) => {
+    const n = left[id] || 0;
+    const on = id === type;
+    return `<button type="button" class="pick-card${on ? ' chosen' : ''}" role="radio" aria-checked="${on}" data-spend-type="${id}"${n ? '' : ' disabled'}>
+      ${t.svg}<span><b>${t.name}</b><small>${n ? `${n} to spend` : 'None to spend'}</small></span></button>`;
+  }).join('');
+  const input = $('#spendCount');
+  input.max = String(max);
+  if (document.activeElement !== input) input.value = String(count);
+  $('#spendLess').disabled = count <= 1;
+  $('#spendMore').disabled = count >= max;
+  $('#spendHours').textContent = `= ${plural(count, 'hour')} on the clock`;
+
+  $('#spendChoose').hidden = confirming;
+  $('#spendConfirm').hidden = !confirming;
+  $('#spendTitle').textContent = confirming ? 'Are you sure?' : 'Spend tokens';
+  $('#spendQuestion').innerHTML = `Spend <b>${plural(count, `${esc(name)} token`)}</b> for a <b>${count}-hour</b> ${esc(name)} timer?`;
+  $('#spendBack').textContent = confirming ? 'Back' : 'Cancel';
+  $('#spendGo').textContent = confirming ? 'Yes, light the fire' : 'Spend…';
+}
+
+// Read the "how many" box: a whole number from 1 to what's left of that type, or an error message
+function spendCountError() {
+  const max = tokenPurse().left[spendDraft.type] || 0;
+  const n = Number($('#spendCount').value);
+  if (!max) return `You have no ${typeName(spendDraft.type)} tokens left to spend.`;
+  if (!Number.isInteger(n) || n < 1 || n > max) return `Spend a whole number of ${typeName(spendDraft.type)} tokens, from 1 to ${max}.`;
+  spendDraft.count = n;
+  return '';
+}
+
+function submitSpend() {
+  const err = spendCountError();
+  $('#spendError').textContent = err;
+  if (err) { spendDraft.confirming = false; renderSpend(); return; }
+  if (!spendDraft.confirming) {
+    spendDraft.confirming = true;
+    renderSpend();
+    $('#spendGo').focus();
+    return;
+  }
+  askNotify();
+  const { type, count } = spendDraft;
+  const slot = spendsOf().length;
+  $('#spendGo').disabled = true;
+  queue = queue.then(async () => {
+    try {
+      state.grove = await api.spendTokens(type, count, slot);
+      $('#spendSheet').close();
+      const s = spendsOf()[spendsOf().length - 1];
+      const ends = new Date(s.endsAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      toast(`🔥 The fire is lit: ${plural(count, 'hour')} of ${typeName(type)}. The alarm rings at ${ends}.`);
+    } catch (e) {
+      $('#spendError').textContent = e.message;
+      try { state.grove = await api.grove(); } catch { /* keep what we have */ }
+    }
+    $('#spendGo').disabled = false;
+    renderTabs(); // schedules the alarm and redraws the Grove
+  });
+}
+
+// Choose the type of the next token, or show the ones already locked in
+function renderGrovePick(g) {
+  const picks = state.grove.picks;
+  const toGo = `${fmtPct(round1(100 - g.bar))}% to go`;
+  if (needsPick(g.tokens)) {
+    const slot = picks.length;
+    const head = slot < g.tokens
+      ? `Choose token #${slot + 1}. It's already grown and waiting for a type.`
+      : `Choose your next token · ${toGo}`;
+    $('#grovePick').innerHTML = `<p class="pick-head"><b>${head}</b><small>Your choice is locked in. You'll get it when the bar fills.</small></p>
+      <div class="pick-cards">${Object.entries(TOKEN_TYPES).map(([id, t]) =>
+        t.locked
+          ? `<button type="button" class="pick-card locked" aria-disabled="true" title="Locked">${t.svg}<span><b>${t.name}</b><small>🔒 Locked</small></span></button>`
+          : `<button type="button" class="pick-card" data-pick="${id}" data-slot="${slot}">${t.svg}<span><b>${t.name}</b><small>${t.blurb}</small></span></button>`).join('')}</div>`;
+    return;
+  }
+  const locked = picks.slice(g.tokens).map((p) => p.type);
+  const later = locked.slice(1, 6).map(typeName);
+  $('#grovePick').innerHTML = `<p class="pick-next"><span>Next token: <span class="pick-lock">🔒 ${TOKEN_TYPES[locked[0]].svg}<b>${typeName(locked[0])}</b></span> · ${toGo}</span>` +
+    (later.length ? `<small>then ${later.join(', ')}${locked.length > 6 ? '…' : ''}</small>` : '') + `</p>`;
+}
+
+function pickToken(type, slot) {
+  queue = queue.then(async () => {
+    try {
+      state.grove = await api.pickToken(type, slot);
+      toast(`🔒 Locked in: ${slot < groveState().tokens ? `token #${slot + 1} is` : 'your next token will be'} ${aType(type)}.`);
+    } catch (e) {
+      toast(e.message);
+      try { state.grove = await api.grove(); } catch { /* keep what we have */ }
+    }
+    renderGrove();
+  });
 }
 
 // Every tracker's history merged in time order. Each entry moves the Grove by delta × worth / 100.
@@ -972,13 +1345,37 @@ function groveTimeline() {
 }
 
 function renderGroveTrail() {
-  const events = groveTimeline();
+  // token picks, campfire spends and their timers running out are merged in as their own lines
+  const events = [
+    ...groveTimeline(),
+    ...state.grove.picks.map((pick, i) => ({ at: pick.at, pick, slot: i })),
+    ...spendsOf().flatMap((s) => [{ at: s.at, spend: s }, ...(fireLeft(s) <= 0 ? [{ at: s.endsAt, burnt: s }] : [])]),
+  ].sort((a, b) => a.at.localeCompare(b.at));
   const items = [];
   for (const e of events.slice(-200).reverse()) {
     const whenTxt = `<time datetime="${e.at}" title="${fullDate(e.at)}">${relTime(e.at)}</time>`;
+    if (e.pick) {
+      items.push(`<li><span class="delta zero">🔒</span><span class="what"><b>Chose ${aType(e.pick.type)} token</b> for token #${e.slot + 1}</span>${whenTxt}</li>`);
+      continue;
+    }
+    if (e.spend) {
+      const n = typeName(e.spend.type);
+      items.push(`<li><span class="delta down">🔥</span><span class="what"><b>Spent ${plural(e.spend.count, `${n} token`)}</b> · a ${e.spend.count}-hour ${n} timer</span>${whenTxt}</li>`);
+      continue;
+    }
+    if (e.burnt) {
+      items.push(`<li><span class="delta zero">⌛</span><span class="what"><b>${typeName(e.burnt.type)} time is up</b> · the ${plural(e.burnt.count, 'hour')} burned down</span>${whenTxt}</li>`);
+      continue;
+    }
     const was = Math.floor(e.before / 100), now = Math.floor(e.after / 100);
-    if (now > was) items.push(`<li><span class="delta up">🌳</span><span class="what"><b>A Grove token sprouted</b> · ${plural(now, 'token')} in all</span>${whenTxt}</li>`);
-    if (now < was) items.push(`<li><span class="delta down">🍂</span><span class="what"><b>A Grove token withered</b> · ${plural(now, 'token')} in all</span>${whenTxt}</li>`);
+    // one line per token, newest first (the list is reversed)
+    for (let n = now; n > was; n--) {
+      const t = tokenTypeAt(n - 1);
+      items.push(`<li><span class="delta up">${t ? TOKEN_TYPES[t].emoji : '🪙'}</span><span class="what"><b>${aType(t, true)} token sprouted</b> · ${plural(n, 'token')} in all</span>${whenTxt}</li>`);
+    }
+    for (let n = now + 1; n <= was; n++) {
+      items.push(`<li><span class="delta down">🍂</span><span class="what"><b>${aType(tokenTypeAt(n - 1), true)} token withered</b> · ${plural(n - 1, 'token')} in all</span>${whenTxt}</li>`);
+    }
     const c = round1(e.change);
     const cls = c > 0 ? 'up' : c < 0 ? 'down' : 'zero';
     const delta = c > 0 ? `+${fmtPct(c)}` : c < 0 ? `−${fmtPct(-c)}` : '·';
@@ -1014,7 +1411,15 @@ function moveStage(dir) {
   $('#legs .leg.selected')?.scrollIntoView({ block: 'nearest' });
 }
 
+// Task shapes are documented once, in server.js (JSDoc only, plain JSON objects):
+// Stage → StageTask → Subtask (one level only), plus the separate RoutineTask for routine days.
+/** @typedef {import('../server.js').Stage} Stage */
+/** @typedef {import('../server.js').StageTask} StageTask */
+/** @typedef {import('../server.js').Subtask} Subtask */
+/** @typedef {import('../server.js').RoutineTask} RoutineTask */
+
 // A stage with tasks fills from them (each task = an equal slice of its bar), not by hand
+/** @type {(s: Stage | undefined) => boolean} */
 const stageHasTasks = (s) => !!(s && s.tasks && s.tasks.length);
 const PLUS_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 const UP_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1984,8 +2389,51 @@ async function toggleWidget() {
 //  Wiring
 // ============================================================
 function wire() {
+  ['pointerdown', 'keydown'].forEach((ev) => window.addEventListener(ev, unlockAudio, { once: true, capture: true }));
   $('#popOutBtn').addEventListener('click', toggleWidget);
   $('#groveBtn').addEventListener('click', () => (groveOpen ? leaveGrove() : openGrove()));
+  $('#grovePick').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pick]');
+    if (!b) return;
+    $('#grovePick').querySelectorAll('[data-pick]').forEach((x) => { x.disabled = true; });
+    pickToken(b.dataset.pick, Number(b.dataset.slot));
+  });
+
+  // the campfire: spend tokens on hours of time
+  $('#campfireArt').innerHTML = CAMPFIRE_SVG;
+  $('#spendConfirmArt').innerHTML = CAMPFIRE_SVG;
+  $('#campfireBtn').addEventListener('click', openSpend);
+  const spendDlg = $('#spendSheet');
+  $('#spendForm').addEventListener('submit', (e) => { e.preventDefault(); submitSpend(); });
+  spendDlg.querySelector('[data-close]').addEventListener('click', () => spendDlg.close());
+  spendDlg.addEventListener('click', (e) => { if (e.target === spendDlg) spendDlg.close(); }); // backdrop
+  $('#spendBack').addEventListener('click', () => {
+    if (!spendDraft.confirming) { spendDlg.close(); return; }
+    spendDraft.confirming = false;
+    renderSpend();
+  });
+  $('#spendTypes').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-spend-type]');
+    if (!b || b.disabled) return;
+    spendDraft.type = b.dataset.spendType;
+    $('#spendError').textContent = '';
+    renderSpend();
+    $(`#spendTypes [data-spend-type="${spendDraft.type}"]`)?.focus();
+  });
+  const stepSpend = (by) => {
+    spendDraft.count = (Number.isInteger(Number($('#spendCount').value)) ? Number($('#spendCount').value) : spendDraft.count) + by;
+    $('#spendCount').value = '';
+    $('#spendError').textContent = '';
+    $('#spendCount').blur();
+    renderSpend();
+  };
+  $('#spendLess').addEventListener('click', () => stepSpend(-1));
+  $('#spendMore').addEventListener('click', () => stepSpend(1));
+  $('#spendCount').addEventListener('input', () => {
+    const n = Number($('#spendCount').value);
+    if (Number.isInteger(n) && n >= 1) { spendDraft.count = n; renderSpend(); }
+  });
+  $('#spendCount').addEventListener('change', () => { $('#spendCount').blur(); renderSpend(); });
   $('#plantBtn').addEventListener('click', openPlantView);
   $('#plantBack').addEventListener('click', leavePlantView);
   $('#emptyForm').addEventListener('submit', (e) => { e.preventDefault(); plant($('#emptyName')); });
@@ -2139,7 +2587,7 @@ function wire() {
     const menuOpen = !$('#routinesMenu').hidden || !$('#archiveMenu').hidden;
     closeMenus();
     // Escape in the plant view goes back to the tracker you came from (the dialog handles its own Escape)
-    if (menuOpen || $('#sheet').open) return;
+    if (menuOpen || $('#sheet').open || $('#spendSheet').open) return;
     if (groveOpen) leaveGrove();
     else if (!active()) leavePlantView();
   });
@@ -2147,7 +2595,7 @@ function wire() {
   // keyboard: ← → nudge (the selected stage on a journey), Shift for 5; ↑ ↓ pick a stage
   window.addEventListener('keydown', (e) => {
     const t = e.target;
-    if (t.matches?.('input, textarea, [contenteditable="true"]') || !canFill() || $('#sheet').open) return;
+    if (t.matches?.('input, textarea, [contenteditable="true"]') || !canFill() || $('#sheet').open || $('#spendSheet').open) return;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
       nudge((e.shiftKey ? 5 : 1) * (e.key === 'ArrowRight' ? 1 : -1));
@@ -2176,7 +2624,9 @@ async function init() {
   wire();
   setPlantKind('journey');
   try {
-    state.projects = await api.list();
+    const [projects, grove] = await Promise.all([api.list(), api.grove()]);
+    state.projects = projects;
+    state.grove = grove;
   } catch (e) {
     toast(`Couldn't load trackers: ${e.message}`);
   }

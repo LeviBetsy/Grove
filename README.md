@@ -73,14 +73,32 @@ token count.
 - Each tracker has a **Grove worth**: how much of the Grove bar it fills when it's full. At 100% a full
   tracker fills the bar once; at 300% it fills it three times; at 30% it fills under a third. It
   counts as you go, so a journey worth 300% that's 10% done gives the Grove 30%.
-- Every time the bar passes 100% it loops back round and you earn a **Grove token** 🌳. Going back
+- Every time the bar passes 100% it loops back round and you earn a **Grove token**. Going back
   down (unticking, dragging a stage back, undo) moves the Grove back too and can take tokens away.
+- **Tokens have types**: **Terraform** (a shovel), **Recruit** (a tree), **Design** (a blueprint) and
+  **Building** (a hammer). You choose the type of your *next* token before you earn it, and that
+  choice is locked in. When the next token has no type yet, a red **!** shows on the Grove logo.
+  Open the Grove and pick a card. The token is yours when the bar fills. For now only **Design**
+  can be picked: the other three cards are shown greyed out with a 🔒 and say "Locked" on hover.
+- Choices are kept in a log and never change. If a token withers, its type stays saved, so filling
+  the bar again grows the same type back, and anything you'd already chosen for later stays too. If
+  the bar fills before you've chosen, the token grows as a **?** coin until you pick its type.
+- **Spending tokens at the campfire.** Below your tokens in the Grove is a big 🔥 **Spend tokens**
+  button. Click it, pick a token type and how many, then confirm. **Every token is worth 1 hour**,
+  whatever its type, so spending 3 Design tokens starts a 3-hour **Design** timer. The timer shows
+  under the campfire with a countdown, and when it runs out the same chime as a routine's time's-up
+  alarm plays (plus a macOS notification if the tab is in the background). Spent tokens leave your
+  hand for good and the logo's 🪙 count drops. Spends and timers show in the Grove's Trail log.
+  Only typed tokens can be spent (not **?** ones). Several timers can burn at once, and there's no
+  way to put one out early. As with routines, nothing rings if Grove isn't open in a tab when a
+  timer ends. If a token you already spent withers, that type is short until the bar grows it back.
 - Set the worth in the editor when you plant or edit a journey or routine (the **Grove worth** box).
   Changing a routine's worth also counts for today's day if it isn't archived. Earlier days keep theirs.
 - **Archiving keeps** what a tracker gave the Grove. **Deleting takes it away**, and the delete
   prompt tells you how much.
-- The Grove is never saved anywhere. It's worked out from your trackers each time. A tracker without
-  a worth counts as 100%.
+- The Grove bar and token count are never saved anywhere. They're worked out from your trackers each
+  time. A tracker without a worth counts as 100%. Only the token choices and the campfire spends are
+  saved (`grove.picks` and `grove.spends` in `data/projects.json`).
 
 ## Daily routines (task templates)
 
@@ -128,8 +146,16 @@ You can manage them in the app or by hand:
   when you press **Start the clock** or tick your first task, and counts down. Tick every task before
   it reaches 0:00 and the day is marked **🏆 Beat the clock**. If time runs out first, it's marked
   **⌛ Missed the clock** (even if Grove was closed at the time), and you can still tick the rest off.
-  Once decided, the result stays: unticking a task doesn't change it. It shows on the routine's page,
+  Unticking a task after you beat the clock starts it running again from where it stopped (the time
+  you'd already used still counts, the time it sat finished doesn't), so you have to finish again before
+  0:00. A missed clock stays missed; unticking just starts the lateness counting again from where it
+  stopped. The result shows on the routine's page,
   in its Trail log, in the **Routines** menu and next to it in the **Archive**.
+- **Time's-up alarm:** while Grove is open in a browser tab, a chime plays when a routine's clock
+  hits 0:00, whichever tracker you're looking at. If the tab is in the background you also get a
+  macOS notification (the browser asks for permission the first time you start a clock; clicking the
+  notification opens that routine). Nothing rings if Grove isn't open, and a background tab may ring
+  up to about a minute late because browsers slow down timers in hidden tabs.
 - **Running late costs Grove worth.** The day's Grove worth drops the moment the clock runs out, then
   again every 15 minutes until the last task is ticked, in five even steps down to 10% at an hour late,
   however much it was worth (a worth already under 10% stays as it is). A routine worth 100% gives

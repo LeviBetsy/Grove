@@ -34,6 +34,7 @@
         <span class="brand-bar"><i id="groveBar"></i></span>
       </span>
       <span class="brand-tokens" id="groveTokenCount"></span>
+      <span class="grove-alert" id="groveAlert" hidden aria-label="A token is ready to choose">!</span>
     </button>
     <nav class="tabs" id="tabs" aria-label="Trackers"></nav>
     <div class="menus">
@@ -125,6 +126,15 @@
         <div class="grove-panel" id="grovePanel" hidden>
           <p class="grove-sum" id="groveSum"></p>
           <div class="grove-tokens" id="groveTokens"></div>
+          <!-- spend tokens: each one buys an hour on a timer (app.js openSpend) -->
+          <button type="button" class="campfire" id="campfireBtn">
+            <span class="campfire-art" id="campfireArt" aria-hidden="true"></span>
+            <b>Spend tokens</b>
+            <small id="campfireHint"></small>
+          </button>
+          <div class="fires" id="groveFires" aria-live="polite"></div>
+          <!-- choose the next token's type (locked in), or see the ones already chosen -->
+          <div class="grove-pick" id="grovePick"></div>
         </div>
 
         <div class="finish" id="finish"></div>
@@ -200,6 +210,54 @@
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Cancel</button>
         <button type="submit" class="btn btn-gold" id="sheetSave"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Spend tokens at the campfire: pick a type and how many, then confirm. 1 token = 1 hour. -->
+  <dialog class="sheet spend-sheet" id="spendSheet" aria-labelledby="spendTitle">
+    <form id="spendForm" autocomplete="off" novalidate>
+      <div class="sheet-head">
+        <div>
+          <p class="eyebrow">Campfire</p>
+          <h2 id="spendTitle">Spend tokens</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="spend-step" id="spendChoose">
+        <div class="field">
+          <span>Which token?</span>
+          <div class="pick-cards spend-types" id="spendTypes" role="radiogroup" aria-label="Token type"></div>
+        </div>
+        <div class="field">
+          <span>How many? <small>· each token is worth 1 hour</small></span>
+          <div class="spend-count">
+            <button type="button" class="icon-btn" id="spendLess" aria-label="One fewer">−</button>
+            <label class="te-clock spend-num">
+              <input id="spendCount" type="number" min="1" step="1" value="1" aria-label="Number of tokens" />
+              <i>tokens</i>
+            </label>
+            <button type="button" class="icon-btn" id="spendMore" aria-label="One more">＋</button>
+            <span class="spend-hours" id="spendHours"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="spend-step spend-confirm" id="spendConfirm" hidden>
+        <span class="campfire-art big" id="spendConfirmArt" aria-hidden="true"></span>
+        <p id="spendQuestion"></p>
+        <small>Spent tokens are gone for good. The alarm rings when the time is up.</small>
+      </div>
+
+      <p class="sheet-error" id="spendError" role="alert"></p>
+
+      <div class="sheet-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" id="spendBack">Cancel</button>
+        <button type="submit" class="btn btn-gold" id="spendGo">Spend…</button>
       </div>
     </form>
   </dialog>

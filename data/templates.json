@@ -10,17 +10,18 @@
         { "name": "Fold sheet", "percent": 10 },
         { "name": "Brush teeth", "percent": 10 },
         { "name": "Shower", "percent": 20 },
-        { "name": "Breakfast or lunch", "percent": 20 },
+        { "name": "Breakfast", "percent": 10 },
         { "name": "Pack bag", "percent": 10 },
         { "name": "Fold laptop", "percent": 10 },
-        { "name": "Do hair", "percent": 10 }
+        { "name": "Do hair", "percent": 10 },
+        { "name": "Pour hot water", "percent": 10 }
       ]
     },
     {
       "id": "bedtime",
       "name": "Bedtime",
       "minutes": 30,
-      "worth": 20,
+      "worth": 10,
       "tasks": [
         { "name": "Put phone away", "percent": 15 },
         { "name": "Brush teeth", "percent": 10 },
@@ -39,6 +40,27 @@
         { "name": "Brush Teeth", "percent": 20 },
         { "name": "Pack", "percent": 10 },
         { "name": "Fold Laptop", "percent": 20 }
+      ]
+    },
+    {
+      "id": "dinner",
+      "name": "Dinner",
+      "minutes": 60,
+      "worth": 10,
+      "tasks": [
+        { "name": "Make dinner", "percent": 50 },
+        { "name": "Eat", "percent": 50 }
+      ]
+    },
+    {
+      "id": "chore",
+      "name": "Chore",
+      "minutes": 30,
+      "worth": 10,
+      "tasks": [
+        { "name": "Wash Dishes", "percent": 30 },
+        { "name": "Clean Floor", "percent": 30 },
+        { "name": "Clean Toilet", "percent": 30 }
       ]
     }
   ]
